@@ -84,8 +84,8 @@ def create_item(payload: ItemCreate) -> ItemOut:
           id, images, problem_text, diagram_desc, method_chain,
           solution_outline, user_notes, user_tags, meta, bm25_text
         ) VALUES (
-          :id, :images::jsonb, :problem_text, :diagram_desc, :method_chain,
-          :solution_outline, :user_notes, :user_tags, :meta::jsonb, :bm25_text
+          :id, CAST(:images AS jsonb), :problem_text, :diagram_desc, :method_chain,
+          :solution_outline, :user_notes, :user_tags, CAST(:meta AS jsonb), :bm25_text
         );
     """)
 
@@ -191,14 +191,14 @@ def update_item(item_id: str, payload: ItemUpdate) -> ItemOut:
 
     update_sql = text("""
         UPDATE problem_items
-        SET images = :images::jsonb,
+        SET images = CAST(:images AS jsonb),
             problem_text = :problem_text,
             diagram_desc = :diagram_desc,
             method_chain = :method_chain,
             solution_outline = :solution_outline,
             user_notes = :user_notes,
             user_tags = :user_tags,
-            meta = :meta::jsonb,
+            meta = CAST(:meta AS jsonb),
             bm25_text = :bm25_text,
             updated_at = now()
         WHERE id = :id
