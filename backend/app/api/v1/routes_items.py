@@ -2,50 +2,15 @@ from __future__ import annotations
 
 import json
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
 from sqlalchemy import text
 
 from backend.app.db.engine import engine
+from backend.app.schemas.item import ItemCreate, ItemOut, ItemUpdate
 
 router = APIRouter()
-
-
-# --------- Schemas（先放这里，跑通后再挪去 schemas/item.py）---------
-class ItemCreate(BaseModel):
-    problem_text: str = ""
-    diagram_desc: str = ""
-    method_chain: str = ""
-    solution_outline: str = ""
-    user_notes: str = ""
-    user_tags: List[str] = Field(default_factory=list)
-    meta: Dict[str, Any] = Field(default_factory=dict)
-    images: List[str] = Field(default_factory=list)  # 先用字符串路径数组，后面再做上传
-
-
-class ItemUpdate(BaseModel):
-    problem_text: Optional[str] = None
-    diagram_desc: Optional[str] = None
-    method_chain: Optional[str] = None
-    solution_outline: Optional[str] = None
-    user_notes: Optional[str] = None
-    user_tags: Optional[List[str]] = None
-    meta: Optional[Dict[str, Any]] = None
-    images: Optional[List[str]] = None
-
-
-class ItemOut(BaseModel):
-    id: str
-    problem_text: str
-    diagram_desc: str
-    method_chain: str
-    solution_outline: str
-    user_notes: str
-    user_tags: List[str]
-    meta: Dict[str, Any]
-    images: List[str]
 
 
 # --------- Helpers（先粗暴，够用）---------
@@ -119,8 +84,8 @@ def create_item(payload: ItemCreate) -> ItemOut:
           id, images, problem_text, diagram_desc, method_chain,
           solution_outline, user_notes, user_tags, meta, bm25_text
         ) VALUES (
-          :id, :images::jsonb, :problem_text, :diagram_desc, :method_chain,
-          :solution_outline, :user_notes, :user_tags, :meta::jsonb, :bm25_text
+          :id, CAST(:images AS jsonb), :problem_text, :diagram_desc, :method_chain,
+          :solution_outline, :user_notes, :user_tags, CAST(:meta AS jsonb), :bm25_text
         );
     """)
 
@@ -226,14 +191,14 @@ def update_item(item_id: str, payload: ItemUpdate) -> ItemOut:
 
     update_sql = text("""
         UPDATE problem_items
-        SET images = :images::jsonb,
+        SET images = CAST(:images AS jsonb),
             problem_text = :problem_text,
             diagram_desc = :diagram_desc,
             method_chain = :method_chain,
             solution_outline = :solution_outline,
             user_notes = :user_notes,
             user_tags = :user_tags,
-            meta = :meta::jsonb,
+            meta = CAST(:meta AS jsonb),
             bm25_text = :bm25_text,
             updated_at = now()
         WHERE id = :id
