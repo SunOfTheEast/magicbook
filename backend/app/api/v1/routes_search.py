@@ -5,36 +5,13 @@ import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter
-from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.engine import RowMapping
 
 from backend.app.db.engine import engine
+from backend.app.schemas.search import Evidence, SearchRequest, SearchResponse, SearchResult
 
 router = APIRouter()
-
-# ---------- Schemas ----------
-class SearchRequest(BaseModel):
-    query: str = Field(..., min_length=1)
-    top_n: int = Field(10, ge=1, le=50)
-    meta_filters: Optional[Dict[str, Any]] = None #Optional代表可选
-
-class Evidence(BaseModel):
-    view_type: str
-    snippet: str
-    rank: float
-
-class SearchResult(BaseModel):
-    item_id: str
-    title: str
-    score: float
-    evidence: List[Evidence]
-    user_tags: List[str] = []
-    images: List[str] = []
-
-class SearchResponse(BaseModel):
-    query_id: str
-    results: List[SearchResult]
 
 
 # ---------- Helpers ----------
