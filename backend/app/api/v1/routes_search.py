@@ -17,7 +17,7 @@ router = APIRouter()
 class SearchRequest(BaseModel):
     query: str = Field(..., min_length=1)
     top_n: int = Field(10, ge=1, le=50)
-    meta_filters: Optional[Dict[str, Any]] = None
+    meta_filters: Optional[Dict[str, Any]] = None #Optional代表可选
 
 class Evidence(BaseModel):
     view_type: str
