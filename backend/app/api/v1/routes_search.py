@@ -96,7 +96,7 @@ def _aggregate_rows(rows: List[RowMapping], top_n: int) -> List[SearchResult]:
 # ---------- API ----------
 @router.post("/search", response_model=SearchResponse)
 def search(req: SearchRequest) -> SearchResponse:
-    query_id = str(uuid.uuid4())
+    query_id = str(uuid.uuid4()) #日志追踪
     meta_where, meta_params = _build_where_meta(req.meta_filters)
 
     sql = text(
@@ -122,6 +122,19 @@ def search(req: SearchRequest) -> SearchResponse:
         LIMIT :k;
         """
     )
+
+    # plainto_tsquery 解析输入的查询，大体意思就是把query拆成多个token并且做匹配的意思
+
+    # sv.fts：是预先构建好的tsvector，最后和plainto_tsquery做匹配
+
+    # ts_rank_cd是PostgreSQL内置的函数，用来计算文本匹配的相关性得分，匹配到的词越多越集中，覆盖就越好
+
+    # snippet部分是用来生成高亮片段的，方便前端展示
+
+    # join部分需要详细说明：
+    # sv: search_views 表，包含item_id, view_type, fts(全文搜索向量), text(文本内容)
+    # pi: problem_items 表，包含id, problem_text, bm25_text, user_tags, images
+    # 通过 item_id 连接两个表，获取每个搜索项的完整信息
 
     recall_k = max(req.top_n * 8, 50)
     params = {"q": req.query, "k": recall_k, **meta_params}

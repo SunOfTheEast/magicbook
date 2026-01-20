@@ -1,0 +1,247 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage{geometry}
+\geometry{left=2.5cm,right=2.5cm,top=2.5cm,bottom=2.5cm}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{setspace}
+\usepackage{ctex}
+
+\setstretch{1.2}
+
+\title{搜索系统改造提议（草案）}
+\author{Memory-Search Project}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\tableofcontents
+\newpage
+
+\section{背景与现状}
+
+当前 \texttt{/search} 接口的实现流程如下：
+
+\begin{enumerate}
+  \item 在 \texttt{search\_views} 表上使用 PostgreSQL Full-Text Search（FTS）召回：
+  \begin{itemize}
+    \item 使用 \texttt{sv.fts @@ plainto\_tsquery('simple', :q)} 做匹配
+    \item 使用 \texttt{ts\_rank\_cd} 计算相关性分数
+    \item 使用 \texttt{ts\_headline} 生成高亮片段
+  \end{itemize}
+
+  \item 通过 \texttt{JOIN problem\_items pi ON pi.id = sv.item\_id} 补全题目实体信息：
+  \begin{itemize}
+    \item 标题：\texttt{COALESCE(NULLIF(pi.problem\_text,''), pi.bm25\_text)}
+    \item 标签、图片、元数据过滤
+  \end{itemize}
+
+  \item Python 层按 \texttt{item\_id} 聚合多行视图：
+  \begin{itemize}
+    \item 题目分数 = 所有视图行中最大 rank
+    \item 每题保留 top3 evidence
+    \item 最终返回 top\_n 个题目
+  \end{itemize}
+\end{enumerate}
+
+该方案实现简单、易于调试，适合项目早期验证。
+
+\section{当前主要问题}
+
+\subsection{LIMIT 是行级而不是 item 级}
+
+SQL 中的 \texttt{LIMIT :k} 作用在 \texttt{search\_views} 的“行”上，而不是“题目”上。
+如果同一题目在多个 \texttt{view\_type} 中都命中，会占用多个名额，导致：
+
+\begin{itemize}
+  \item 召回结果的题目多样性下降
+  \item 少数强题垄断召回池
+\end{itemize}
+
+\subsection{单一路召回容易偏科}
+
+当前系统只依赖一条召回通道（FTS + 原始 query）：
+
+\begin{itemize}
+  \item 用户描述偏“解析/方法”，但题干窗口更强
+  \item query 包含年份、地区、别名等需要归一化
+  \item 有些需求更像模糊匹配而非全文检索
+\end{itemize}
+
+\subsection{不同窗口分数不可比}
+
+未来一旦引入多窗口、多 query rewrite，不同窗口的
+\texttt{ts\_rank\_cd} 分布差异很大，直接加权求和会导致尺度灾难。
+
+\section{改造目标}
+
+\begin{itemize}
+  \item 召回更稳定：对不同描述方式都有覆盖。
+  \item 结果可解释：evidence 能体现命中来源窗口/字段。
+  \item 改动可控：复用现有表结构与接口，渐进升级。
+  \item 便于调参：可通过权重/窗口开关做 A/B。
+\end{itemize}
+
+\section{方案：多窗口召回 + 融合重排}
+
+\subsection{窗口（Window）的定义}
+
+窗口 = 一条召回通道（query 版本 $\times$ 视图范围 $\times$ 检索方式）。
+
+初始建议窗口：
+
+\begin{itemize}
+  \item W1：题干窗口（\texttt{problem\_text, diagram\_desc}）
+  \item W2：解析窗口（\texttt{solution\_outline, method\_chain}）
+  \item W3：记忆窗口（\texttt{user\_notes, user\_tags}）
+  \item W4：短 query 窗口（关键词抽取后的 query）
+\end{itemize}
+
+\subsection{窗口内输出：item 级 topM}
+
+每个窗口执行一次 SQL，输出：
+
+\begin{itemize}
+  \item \texttt{item\_id}
+  \item \texttt{window\_score}（如窗口内最大 rank）
+  \item 窗口内 topK evidence
+  \item 标题、标签、图片
+\end{itemize}
+
+原则：每个窗口返回的是“题目级” topM，而不是“行级” topM。
+
+\subsection{融合策略：RRF（名次融合）}
+
+由于不同窗口分数不可比，第一版推荐使用 RRF：
+
+若某 item 在窗口 $i$ 的名次为 $r_i$，则该窗口贡献为：
+
+\[
+score_i = \frac{1}{k + r_i}
+\]
+
+最终融合分：
+
+\[
+FinalScore = \sum_i weight_i \cdot \frac{1}{k + r_i}
+\]
+
+其中 $k$ 常取 60，$weight_i$ 为窗口权重。
+
+优点：
+
+\begin{itemize}
+  \item 不依赖原始分数尺度
+  \item 多窗口共同命中会自然靠前
+  \item 实战稳定、参数少
+\end{itemize}
+
+\subsection{第二阶段：归一化 + 加权和}
+
+在积累用户日志后，可升级为：
+
+\begin{itemize}
+  \item 每窗口分数做归一化（分位数、z-score）
+  \item 再加权求和或使用学习排序
+\end{itemize}
+
+\section{数据与接口设计}
+
+\subsection{接口保持兼容}
+
+继续返回：
+
+\begin{itemize}
+  \item \texttt{item\_id, title, score, evidence, user\_tags, images}
+\end{itemize}
+
+建议 evidence 中新增可选字段：
+
+\begin{itemize}
+  \item \texttt{window}：来源窗口
+  \item \texttt{raw\_rank}：行级 rank
+  \item \texttt{window\_score}：窗口内聚合分
+\end{itemize}
+
+\subsection{窗口配置化}
+
+窗口可用 Python 配置：
+
+\begin{itemize}
+  \item 窗口名
+  \item 允许的 \texttt{view\_type}
+  \item query 变体
+  \item 权重
+\end{itemize}
+
+\section{实施路线}
+
+\subsection{Phase 0：稳定现状}
+
+\begin{itemize}
+  \item 保证现有接口可跑通
+  \item 补齐建表、索引、刷新 \texttt{search\_views} 的脚本
+\end{itemize}
+
+\subsection{Phase 1：多窗口，多 SQL}
+
+\begin{itemize}
+  \item 多跑几次 SQL（不同窗口）
+  \item Python 中按 item 聚合
+  \item 用 RRF 融合
+\end{itemize}
+
+\subsection{Phase 2：窗口内聚合下推到 SQL}
+
+\begin{itemize}
+  \item SQL 中 \texttt{GROUP BY item\_id}
+  \item 输出窗口内 item 级分数
+\end{itemize}
+
+\subsection{Phase 3：日志与学习}
+
+\begin{itemize}
+  \item 增加点击、停留、收藏等埋点
+  \item 调窗口权重或学习排序
+\end{itemize}
+
+\section{评估指标}
+
+\subsection{离线指标}
+
+\begin{itemize}
+  \item Recall@K
+  \item MRR / nDCG
+  \item 覆盖率（题干型、记忆型、解析型 query）
+\end{itemize}
+
+\subsection{在线指标}
+
+\begin{itemize}
+  \item 点击率 CTR@K
+  \item 首点位置
+  \item query 改写次数
+  \item 无结果率
+\end{itemize}
+
+\section{风险与注意事项}
+
+\begin{itemize}
+  \item 第一版避免对原始 rank 直接加权
+  \item 控制窗口数量与每窗 topM
+  \item 最终 evidence 需跨窗口筛选最有解释力的
+  \item meta\_filters 建议作为 hard filter
+\end{itemize}
+
+\section{附：当前代码跑通的最短 Checklist}
+
+\begin{enumerate}
+  \item 数据库中存在 \texttt{problem\_items} 与 \texttt{search\_views}
+  \item \texttt{search\_views} 含：\texttt{item\_id, view\_type, fts, text}
+  \item \texttt{fts} 与查询均使用 \texttt{'simple'} 字典
+  \item 对 \texttt{fts} 建 GIN 索引
+  \item 在 psql 中手动验证 FTS 查询
+  \item 再启动 FastAPI 调用 \texttt{/search}
+\end{enumerate}
+
+\end{document}
