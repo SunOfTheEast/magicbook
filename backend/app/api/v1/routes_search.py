@@ -70,6 +70,12 @@ def _aggregate_rows(rows: List[RowMapping], top_n: int) -> List[SearchResult]:
     return results[:top_n]
 
 
+def _refresh_fts(conn) -> None:
+    conn.execute(text("UPDATE search_views SET text = text;"))
+    conn.execute(text("UPDATE problem_items SET bm25_text = bm25_text;"))
+    conn.execute(text("UPDATE tag_nodes SET text_for_search = text_for_search;"))
+
+
 # ---------- API ----------
 @router.post("/search", response_model=SearchResponse)
 def search(req: SearchRequest) -> SearchResponse:
@@ -121,3 +127,10 @@ def search(req: SearchRequest) -> SearchResponse:
 
     results = _aggregate_rows(rows, top_n=req.top_n)
     return SearchResponse(query_id=query_id, results=results)
+
+
+@router.post("/search/reindex")
+def reindex_search_views() -> Dict[str, str]:
+    with engine.begin() as conn:
+        _refresh_fts(conn)
+    return {"status": "ok"}
