@@ -50,7 +50,7 @@ def upsert_search_views(conn, item_id: str, views: Dict[str, str]) -> None:
     """
     upsert_sql = text("""
         INSERT INTO search_views (item_id, view_type, text, updated_at)
-        VALUES (:item_id, :view_type::view_type, :text, now())
+        VALUES (:item_id, CAST(:view_type AS view_type), :text, now())
         ON CONFLICT (item_id, view_type)
         DO UPDATE SET text = EXCLUDED.text, updated_at = now();
     """)
