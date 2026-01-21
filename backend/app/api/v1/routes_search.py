@@ -81,11 +81,11 @@ def search(req: SearchRequest) -> SearchResponse:
         SELECT
           sv.item_id,
           sv.view_type,
-          ts_rank_cd(sv.fts, plainto_tsquery('simple', :q)) AS rank,
+          ts_rank_cd(sv.fts, plainto_tsquery('zhcfg', :q)) AS rank,
           ts_headline(
-            'simple',
+            'zhcfg',
             sv.text,
-            plainto_tsquery('simple', :q),
+            plainto_tsquery('zhcfg', :q),
             'StartSel=[[, StopSel=]], MaxFragments=2, MinWords=4, MaxWords=16'
           ) AS snippet,
           COALESCE(NULLIF(pi.problem_text, ''), pi.bm25_text) AS title,
@@ -93,7 +93,7 @@ def search(req: SearchRequest) -> SearchResponse:
           pi.images
         FROM search_views sv
         JOIN problem_items pi ON pi.id = sv.item_id
-        WHERE sv.fts @@ plainto_tsquery('simple', :q)
+        WHERE sv.fts @@ plainto_tsquery('zhcfg', :q)
         {meta_where}
         ORDER BY rank DESC
         LIMIT :k;
