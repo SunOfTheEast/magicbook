@@ -82,16 +82,16 @@ def search(req: SearchRequest) -> SearchResponse:
     query_id = str(uuid.uuid4()) #日志追踪
     meta_where, meta_params = _build_where_meta(req.meta_filters)
 
-    sql = text(
+    strict_sql = text(
         f"""
         SELECT
           sv.item_id,
           sv.view_type,
-          ts_rank_cd(sv.fts, plainto_tsquery('zhcfg', :q)) AS rank,
+          ts_rank_cd(sv.fts, websearch_to_tsquery('zhcfg', :q)) AS rank,
           ts_headline(
             'zhcfg',
             sv.text,
-            plainto_tsquery('zhcfg', :q),
+            websearch_to_tsquery('zhcfg', :q),
             'StartSel=[[, StopSel=]], MaxFragments=2, MinWords=4, MaxWords=16'
           ) AS snippet,
           COALESCE(NULLIF(pi.problem_text, ''), pi.bm25_text) AS title,
@@ -99,14 +99,47 @@ def search(req: SearchRequest) -> SearchResponse:
           pi.images
         FROM search_views sv
         JOIN problem_items pi ON pi.id = sv.item_id
-        WHERE sv.fts @@ plainto_tsquery('zhcfg', :q)
+        WHERE sv.fts @@ websearch_to_tsquery('zhcfg', :q)
         {meta_where}
         ORDER BY rank DESC
         LIMIT :k;
         """
     )
 
-    # plainto_tsquery 解析输入的查询，大体意思就是把query拆成多个token并且做匹配的意思
+    fuzzy_sql = text(
+        f"""
+        WITH q AS (
+          SELECT
+            websearch_to_tsquery('zhcfg', :q) AS strict_q,
+            NULLIF(array_to_string(tsvector_to_array(to_tsvector('zhcfg', :q)), ' | '), '') AS soft_q_text
+        )
+        SELECT
+          sv.item_id,
+          sv.view_type,
+          ts_rank_cd(
+            sv.fts,
+            COALESCE(to_tsquery('zhcfg', q.soft_q_text), q.strict_q)
+          ) AS rank,
+          ts_headline(
+            'zhcfg',
+            sv.text,
+            COALESCE(to_tsquery('zhcfg', q.soft_q_text), q.strict_q),
+            'StartSel=[[, StopSel=]], MaxFragments=2, MinWords=4, MaxWords=16'
+          ) AS snippet,
+          COALESCE(NULLIF(pi.problem_text, ''), pi.bm25_text) AS title,
+          pi.user_tags,
+          pi.images
+        FROM search_views sv
+        JOIN problem_items pi ON pi.id = sv.item_id
+        CROSS JOIN q
+        WHERE sv.fts @@ COALESCE(to_tsquery('zhcfg', q.soft_q_text), q.strict_q)
+        {meta_where}
+        ORDER BY rank DESC
+        LIMIT :k;
+        """
+    )
+
+    # websearch_to_tsquery 允许更宽松的查询语义，中文分词后更接近“模糊检索”的效果
 
     # sv.fts：是预先构建好的tsvector，最后和plainto_tsquery做匹配
 
@@ -123,7 +156,9 @@ def search(req: SearchRequest) -> SearchResponse:
     params = {"q": req.query, "k": recall_k, **meta_params}
 
     with engine.connect() as conn:
-        rows = list(conn.execute(sql, params).mappings().all())
+        rows = list(conn.execute(strict_sql, params).mappings().all())
+        if not rows:
+            rows = list(conn.execute(fuzzy_sql, params).mappings().all())
 
     results = _aggregate_rows(rows, top_n=req.top_n)
     return SearchResponse(query_id=query_id, results=results)
